@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SELF="${BASH_SOURCE[0]:-${0}}"
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+
+# shellcheck source=../lib/common.sh
+. "$ROOT/lib/common.sh"
+# shellcheck source=../lib/brew.sh
+. "$ROOT/lib/brew.sh"
+# shellcheck source=../lib/asdf.sh
+. "$ROOT/lib/asdf.sh"
+# shellcheck source=../lib/tarball.sh
+. "$ROOT/lib/tarball.sh"
+
+_gs_verify() { _gs_has go || { _gs_err "go not found on PATH after switch."; return 1; }; go version; }
+_is_macos() { [ "$(_gs_os)" = "darwin" ]; }
+_is_linux() { [ "$(_gs_os)" = "linux" ]; }
+
+usage() {
+  cat <<'EOF'
+goswitch - switch Go versions with multiple providers
+
+Usage:
+  goswitch <1.24|1.24.6>
+  goswitch -y <1.22>             # auto-install brew go@<mm> (or 'go' if current series)
+  goswitch --brew-install        # interactive install of a missing Homebrew series
+  goswitch --asdf-install <ver>  # install via asdf (accepts series like 1.21)
+  goswitch --list                # list installed brew/asdf/tarball versions
+  goswitch --which               # show current go binary and version
+  goswitch --tar-install 1.21.13 # (Linux) install official tarball to ~/.local/goversions/<ver>
+EOF
+}
+
+main() {
+  local auto_yes=0 subcmd="" req="" mm="" tarver=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -y|--yes) auto_yes=1; shift ;;
+      --brew-install|--installer) subcmd="brew-install"; shift ;;
+      --asdf-install) subcmd="asdf-install"; shift; req="${1:-}"; [ -z "$req" ] && { _gs_err "Need a version or series (e.g. 1.21.13 or 1.21)"; exit 1; }; shift ;;
+      --tar-install) subcmd="tar-install"; shift; tarver="${1:-}"; [ -z "$tarver" ] && { _gs_err "Need a version, e.g. 1.21.13"; exit 1; }; shift ;;
+      --list) subcmd="list"; shift ;;
+      --which) subcmd="which"; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) req="$1"; shift ;;
+    esac
+  done
+
+  case "$subcmd" in
+    brew-install) goswitch_brew_install; exit $? ;;
+    asdf-install) goswitch_asdf_install "$req"; exit $? ;;
+    tar-install)
+      if ! _is_linux; then _gs_err "--tar-install is intended for Linux"; exit 1; fi
+      if _gs_tar_installed "$tarver"; then
+        _gs_info "Tarball ${tarver} already installed."
+      else
+        _gs_tar_install "$tarver" || exit 1
+      fi
+      _gs_tar_activate "$tarver" || exit 1
+      _gs_info "Using tarball Go ${tarver}: $(_gs_verify)"; exit 0
+      ;;
+    list)
+      if _gs_has brew; then _gs_info "Homebrew installed series:"; _gs_brew_installed_series || true
+      else _gs_info "Homebrew not found."; fi
+
+      if _gs_has asdf; then _gs_info ""; _gs_info "asdf installed versions:"; _gs_asdf_list_versions_clean || true
+      else _gs_info ""; _gs_info "asdf not found."; fi
+
+      if _is_linux; then _gs_info ""; _gs_info "tarball installs (in ~/.local/goversions):"; _gs_tar_list_installed || true; fi
+      exit 0
+      ;;
+    which)
+      if _gs_has go; then printf "Go binary: %s\n" "$(command -v go)"; _gs_verify
+      else _gs_err "go not found on PATH."; exit 1; fi
+      exit 0
+      ;;
+  esac
+
+  [ -n "$req" ] || { usage; exit 1; }
+  mm="$(_gs_mm "$req")"
+  case "$mm" in ''|*[!0-9.]*)
+    _gs_err "Version must look like 1.22 or 1.22.3"; exit 1 ;;
+  esac
+
+  local have_brew=0 have_asdf=0
+  _gs_has brew && have_brew=1
+  _gs_has asdf && have_asdf=1
+
+  if _is_macos; then
+    # macOS: Brew -> asdf (with asdf auto-install prompt)
+    if [ "$have_brew" -eq 1 ]; then
+      if brew list --versions "go@${mm}" >/dev/null 2>&1 || brew list --versions go >/dev/null 2>&1; then
+        if _gs_activate_brew_series "$mm"; then _gs_info "Using Homebrew go@${mm}: $(_gs_verify)"; exit 0; fi
+      fi
+      if _gs_brew_series_available "$mm"; then
+        if [ "$auto_yes" -eq 1 ]; then
+          _gs_info "Installing go@${mm} via Homebrew..."
+          if brew install "go@${mm}"; then _gs_activate_brew_series "$mm" && { _gs_info "Using Homebrew go@${mm}: $(_gs_verify)"; exit 0; }; fi
+          _gs_err "Homebrew install/activation failed — trying asdf."
+        else
+          _gs_info "Homebrew go@${mm} is not installed."
+          printf "Install go@%s now? [Y/n] " "$mm"; read -r ans; ans="${ans:-Y}"
+          case "$ans" in
+            [Yy]*) if brew install "go@${mm}" && _gs_activate_brew_series "$mm"; then _gs_info "Using Homebrew go@${mm}: $(_gs_verify)"; exit 0; fi
+                   _gs_err "Homebrew install/activation failed — will try asdf." ;;
+          esac
+        fi
+      fi
+    fi
+    # asdf fallback (with optional auto-install)
+    if [ "$have_asdf" -eq 1 ]; then
+      if _gs_asdf_list_versions_clean | grep -qx "$req"; then
+        _gs_activate_asdf_version "$req" && { _gs_info "Using asdf golang $req: $(_gs_verify)"; exit 0; }
+      fi
+      local match; match="$(_gs_asdf_list_versions_clean | grep -E "^${mm}(\.|$)" | sort -V | tail -n1 || true)"
+      if [ -n "$match" ]; then
+        _gs_activate_asdf_version "$match" && { _gs_info "Using asdf golang $match (series ${mm}.x): $(_gs_verify)"; exit 0; }
+      fi
+      # Not installed -> offer install
+      if [ "$auto_yes" -eq 1 ]; then
+        goswitch_asdf_install "$req" && exit 0 || exit 1
+      else
+        printf "asdf golang %s is not installed. Install via asdf now? [Y/n] " "$req"
+        read -r yn; yn="${yn:-Y}"
+        case "$yn" in
+          [Yy]*) goswitch_asdf_install "$req" && exit 0 || exit 1 ;;
+        esac
+      fi
+    fi
+    _gs_err "Could not activate Go ${req}."; [ "$have_asdf" -eq 1 ] && _gs_info "Tip: goswitch --asdf-install ${req}"; exit 1
+  fi
+
+  if _is_linux; then
+    # Linux: asdf -> Brew -> Tarball (with asdf auto-install prompt)
+    if [ "$have_asdf" -eq 1 ]; then
+      if _gs_asdf_list_versions_clean | grep -qx "$req"; then
+        _gs_activate_asdf_version "$req" && { _gs_info "Using asdf golang $req: $(_gs_verify)"; exit 0; }
+      fi
+      local match; match="$(_gs_asdf_list_versions_clean | grep -E "^${mm}(\.|$)" | sort -V | tail -n1 || true)"
+      if [ -n "$match" ]; then
+        _gs_activate_asdf_version "$match" && { _gs_info "Using asdf golang $match (series ${mm}.x): $(_gs_verify)"; exit 0; }
+      fi
+      # Offer asdf install before trying others
+      if [ "$auto_yes" -eq 1 ]; then
+        goswitch_asdf_install "$req" && exit 0 || true
+      else
+        printf "asdf golang %s is not installed. Install via asdf now? [Y/n] " "$req"
+        read -r yn; yn="${yn:-Y}"
+        case "$yn" in [Yy]*) goswitch_asdf_install "$req" && exit 0 || true ;; esac
+      fi
+    fi
+    if [ "$have_brew" -eq 1 ]; then
+      if brew list --versions "go@${mm}" >/dev/null 2>&1 || brew list --versions go >/dev/null 2>&1; then
+        if _gs_activate_brew_series "$mm"; then _gs_info "Using Homebrew go@${mm}: $(_gs_verify)"; exit 0; fi
+      fi
+      if _gs_brew_series_available "$mm"; then
+        if [ "$auto_yes" -eq 1 ]; then
+          _gs_info "Installing go@${mm} via Homebrew..."
+          if brew install "go@${mm}"; then _gs_activate_brew_series "$mm" && { _gs_info "Using Homebrew go@${mm}: $(_gs_verify)"; exit 0; }; fi
+          _gs_err "Homebrew install/activation failed — will try tarball."
+        else
+          _gs_info "Homebrew go@${mm} is not installed."
+          printf "Install go@%s now via brew? [Y/n] " "$mm"; read -r ans; ans="${ans:-Y}"
+          case "$ans" in
+            [Yy]*) if brew install "go@${mm}" && _gs_activate_brew_series "$mm"; then _gs_info "Using Homebrew go@${mm}: $(_gs_verify)"; exit 0; fi
+                   _gs_err "Homebrew install/activation failed — will try tarball." ;;
+          esac
+        fi
+      fi
+    fi
+    # Tarball path
+    local exact_tar=""
+    if _gs_tar_installed "$req"; then
+      _gs_tar_activate "$req" && { _gs_info "Using tarball Go ${req}: $(_gs_verify)"; exit 0; }
+    fi
+    exact_tar="$(_gs_tar_best_match_in_series "$mm" || true)"
+    if [ -n "$exact_tar" ]; then
+      _gs_tar_activate "$exact_tar" && { _gs_info "Using tarball Go ${exact_tar} (series ${mm}.x): $(_gs_verify)"; exit 0; }
+    fi
+    _gs_info "No tarball install for ${req} found under ~/.local/goversions."
+    printf "Download and install official tarball for %s now? [Y/n] " "$req"; read -r yn2; yn2="${yn2:-Y}"
+    case "$yn2" in [Yy]*) _gs_tar_install "$req" && _gs_tar_activate "$req" && { _gs_info "Using tarball Go ${req}: $(_gs_verify)"; exit 0; } ;; esac
+    _gs_err "Could not activate Go ${req} on Linux."; _gs_info "Tips: goswitch --asdf-install ${req}  |  goswitch --tar-install ${req}"; exit 1
+  fi
+
+  _gs_err "Unsupported OS: $(_gs_os)"; exit 1
+}
+
+main "$@"

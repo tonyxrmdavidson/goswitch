@@ -1,0 +1,54 @@
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Thumbnails
+._*
+
+# macOS specific metadata
+.Spotlight-V100
+.Trashes
+
+# Linux/Unix temp files
+*~
+.nfs*
+
+# Shell history (don’t commit your personal command history)
+.bash_history
+.zsh_history
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*.old
+
+# IDE/project files
+.vscode/
+.idea/
+*.code-workspace
+
+# Environment variables / secrets
+.env
+.env.*
+
+# Compiled binaries
+*.out
+*.exe
+*.o
+*.so
+*.a
+
+# goswitch-specific temp files
+goswitch-debug.log
+goswitch-test.sh
+
+# Backup files from editing
+*#
+
