@@ -1,3 +1,4 @@
+# test/helpers.bash
 load 'vendor/bats-support/load'
 load 'vendor/bats-assert/load'
 
@@ -8,20 +9,19 @@ setup_path_with_mocks() {
   export TEST_BIN_DIR="${BATS_TEST_TMPDIR}/bin"
   mkdir -p "$TEST_BIN_DIR"
 
-  # a writable mock root for fake file trees
+  # writable mock root for fake trees
   export MOCK_ROOT="${BATS_TEST_TMPDIR}/mock"
   mkdir -p "$MOCK_ROOT"
 
-  # IMPORTANT: prepend, don't replace, so /usr/bin/env can find bash
+  # prepend (do NOT replace) so /usr/bin/env is still found
   export PATH="$TEST_BIN_DIR:$PATH"
 }
 
 teardown() {
-  # restore PATH after each test
   [ -n "${PATH_ORIG:-}" ] && export PATH="$PATH_ORIG"
 }
 
-# Write a mock command into TEST_BIN_DIR
+# write a mock into TEST_BIN_DIR
 mock_cmd() {
   local name="$1"; shift
   : "${TEST_BIN_DIR:?call setup_path_with_mocks first}"
@@ -34,7 +34,7 @@ SH
   chmod +x "$f"
 }
 
-# Source the libs so helper functions like _gs_mm are available
+# Source project libs (functions like _gs_mm available to tests)
 source_goswitch_libs() {
   export REPO_ROOT="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." && pwd)"
   . "$REPO_ROOT/lib/common.sh"
@@ -43,7 +43,7 @@ source_goswitch_libs() {
   . "$REPO_ROOT/lib/tarball.sh"
 }
 
-# Run the real CLI
+# IMPORTANT: run through Bats' `run` so $status/$output are set
 run_goswitch() {
-  "$REPO_ROOT/cmd/goswitch" "$@"
+  run "$REPO_ROOT/cmd/goswitch" "$@"
 }
