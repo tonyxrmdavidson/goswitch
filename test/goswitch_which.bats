@@ -6,8 +6,10 @@ setup() {
 }
 
 @test "--which fails with clear error when no 'go' on PATH" {
-  # keep env available for shebang, but no go
-  export PATH="/usr/bin:$TEST_BIN_DIR"
+  # Keep coreutils for bats-assert (cat, printf), keep env for shebang.
+  # Do NOT include directories that might contain a real `go`.
+  export PATH="/usr/bin:/bin:$TEST_BIN_DIR"
+
   run_goswitch --which
   assert_failure
   assert_output --partial "go not found on PATH."

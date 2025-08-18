@@ -45,8 +45,8 @@ _gs_asdf_install_version() {
 _gs_activate_asdf_version() {
   local ver="$1" dir bin1 bin2 usebin
   dir="$(asdf where golang "$ver")" || return 1
-  bin1="${dir}/bin/go"         # some setups
-  bin2="${dir}/go/bin/go"      # common layout for asdf-golang
+  bin1="${dir}/bin/go"    # some setups
+  bin2="${dir}/go/bin/go" # common layout for asdf-golang
   if [ -x "$bin1" ]; then
     usebin="$(dirname "$bin1")"
   elif [ -x "$bin2" ]; then
@@ -85,7 +85,10 @@ goswitch_asdf_install() {
   if _gs_asdf_list_versions_clean | grep -qx "$ver"; then
     _gs_info "asdf golang $ver is already installed."
   else
-    _gs_asdf_install_version "$ver" || { _gs_err "asdf install failed for ${ver}."; return 1; }
+    _gs_asdf_install_version "$ver" || {
+      _gs_err "asdf install failed for ${ver}."
+      return 1
+    }
   fi
 
   # Activate immediately

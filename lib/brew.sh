@@ -64,44 +64,85 @@ _gs_activate_brew_series() {
 
 # Interactive installer
 goswitch_brew_install() {
-  if ! _gs_has brew; then _gs_err "Homebrew not found."; return 1; fi
+  if ! _gs_has brew; then
+    _gs_err "Homebrew not found."
+    return 1
+  fi
   local not_installed_list line
   not_installed_list="$(_gs_brew_not_installed_series)"
-  if [ -z "$not_installed_list" ]; then _gs_info "All discovered Homebrew go@ series are already installed."; return 0; fi
+  if [ -z "$not_installed_list" ]; then
+    _gs_info "All discovered Homebrew go@ series are already installed."
+    return 0
+  fi
 
-  local -a arr; arr=()
+  local -a arr
+  arr=()
   while IFS= read -r line; do [ -n "$line" ] && arr=("${arr[@]}" "$line"); done <<EOF
 $not_installed_list
 EOF
 
   _gs_info "Homebrew Go series NOT installed:"
   local i
-  for i in "${!arr[@]}"; do printf "  [%d] go@%s\n" "$((i+1))" "${arr[$i]}"; done
+  for i in "${!arr[@]}"; do printf "  [%d] go@%s\n" "$((i + 1))" "${arr[$i]}"; done
 
   local choice
   while :; do
     read -r -p "Select a number to install (or 'q' to cancel): " choice
     case "$choice" in
-      [Qq]) _gs_info "Cancelled."; return 1 ;;
-      ''|*[!0-9]*) _gs_err "Invalid selection."; continue ;;
-      *) [ "$choice" -ge 1 ] && [ "$choice" -le "${#arr[@]}" ] && break || _gs_err "Invalid selection." ;;
+      [Qq])
+        _gs_info "Cancelled."
+        return 1
+        ;;
+      '' | *[!0-9]*)
+        _gs_err "Invalid selection."
+        continue
+        ;;
+      *)
+        if [ "$choice" -ge 1 ] && [ "$choice" -le "${#arr[@]}" ]; then
+          break
+        else
+          _gs_err "Invalid selection."
+        fi
+        ;;
+
     esac
   done
 
-  local mm="${arr[$((choice-1))]}"
-  read -r -p "Install Homebrew go@${mm}? [Y/n] " ans; ans="${ans:-Y}"
+  local mm="${arr[$((choice - 1))]}"
+  read -r -p "Install Homebrew go@${mm}? [Y/n] " ans
+  ans="${ans:-Y}"
   case "$ans" in
     [Yy]*)
       if _gs_brew_series_available "$mm"; then
-        _gs_info "Installing go@${mm} via Homebrew..."; brew install "go@${mm}" || { _gs_err "Homebrew install failed."; return 1; }
+        _gs_info "Installing go@${mm} via Homebrew..."
+        brew install "go@${mm}" || {
+          _gs_err "Homebrew install failed."
+          return 1
+        }
       else
-        local cur_mm="$(_gs_brew_current_series 2>/dev/null)"
-        if [ "$cur_mm" = "$mm" ]; then _gs_info "Installing current 'go' ($cur_mm) via Homebrew..."; brew install go || { _gs_err "Homebrew install failed."; return 1; }
-        else _gs_err "Homebrew go@${mm} unavailable/disabled, and 'go' is $cur_mm."; return 1; fi
+        local cur_mm
+        cur_mm="$(_gs_brew_current_series 2>/dev/null)"
+
+        if [ "$cur_mm" = "$mm" ]; then
+          _gs_info "Installing current 'go' ($cur_mm) via Homebrew..."
+          brew install go || {
+            _gs_err "Homebrew install failed."
+            return 1
+          }
+        else
+          _gs_err "Homebrew go@${mm} unavailable/disabled, and 'go' is $cur_mm."
+          return 1
+        fi
       fi
-      _gs_activate_brew_series "$mm" || { _gs_err "Installed but could not activate go@${mm}."; return 1; }
+      _gs_activate_brew_series "$mm" || {
+        _gs_err "Installed but could not activate go@${mm}."
+        return 1
+      }
       _gs_info "Activated Homebrew go@${mm}: $(go version)"
       ;;
-    *) _gs_info "Cancelled."; return 1 ;;
+    *)
+      _gs_info "Cancelled."
+      return 1
+      ;;
   esac
 }

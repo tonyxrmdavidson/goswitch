@@ -9,7 +9,8 @@ _gs_tar_root() { echo "${HOME}/.local/goversions"; }
 # Tarball URL for official Go
 _gs_tar_url() {
   local ver="$1" os arch
-  os="$(_gs_os)"; arch="$(_gs_arch)"
+  os="$(_gs_os)"
+  arch="$(_gs_arch)"
   echo "https://go.dev/dl/go${ver}.${os}-${arch}.tar.gz"
 }
 
@@ -23,12 +24,16 @@ _gs_tar_install() {
   tmp="$(mktemp -d)"
   _gs_info "Downloading $url"
   if ! curl -fsSL "$url" -o "${tmp}/go.tgz"; then
-    _gs_err "Download failed: $url"; rm -rf "$tmp"; return 1
+    _gs_err "Download failed: $url"
+    rm -rf "$tmp"
+    return 1
   fi
   rm -rf "${dest}/go"
   _gs_info "Extracting to ${dest}"
   if ! tar -C "$dest" -xzf "${tmp}/go.tgz"; then
-    _gs_err "Extraction failed"; rm -rf "$tmp"; return 1
+    _gs_err "Extraction failed"
+    rm -rf "$tmp"
+    return 1
   fi
   rm -rf "$tmp"
   return 0
@@ -47,7 +52,8 @@ _gs_tar_activate() {
   root="$(_gs_tar_root)"
   bindir="${root}/${ver}/go/bin"
   if [ ! -x "${bindir}/go" ]; then
-    _gs_err "Tarball go not found at ${bindir}/go"; return 1
+    _gs_err "Tarball go not found at ${bindir}/go"
+    return 1
   fi
   export PATH="${bindir}:${PATH}"
   hash -r 2>/dev/null || true
@@ -56,15 +62,17 @@ _gs_tar_activate() {
 
 # List installed tarball versions
 _gs_tar_list_installed() {
-  local root; root="$(_gs_tar_root)"
+  local root
+  root="$(_gs_tar_root)"
   [ -d "$root" ] || return 0
   find "$root" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null | sort -V
 }
 
 # Pick best patch in a series (e.g., series 1.21 -> 1.21.13)
 _gs_tar_best_match_in_series() {
-  local mm="$1" root; root="$(_gs_tar_root)"
+  local mm="$1" root
+  root="$(_gs_tar_root)"
   [ -d "$root" ] || return 1
-  find "$root" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null \
-    | grep -E "^${mm}(\.|$)" | sort -V | tail -n1
+  find "$root" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null |
+    grep -E "^${mm}(\.|$)" | sort -V | tail -n1
 }
