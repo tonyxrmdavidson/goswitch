@@ -33,6 +33,28 @@ _gs_verify() {
 _is_macos() { [ "$(_gs_os)" = "darwin" ]; }
 _is_linux() { [ "$(_gs_os)" = "linux" ]; }
 
+# Non-interactive detection and confirmation
+_gs_noninteractive() {
+  # Non-interactive if explicitly requested or stdin isn't a TTY
+  [ "${GOSWITCH_NONINTERACTIVE:-0}" = "1" ] || [ ! -t 0 ]
+}
+
+_gs_confirm() {
+  # Usage: _gs_confirm "Prompt text"
+  local prompt="${1:-Proceed?}"
+  if _gs_noninteractive; then
+    return 0
+  fi
+  # Read from the real terminal; if unavailable, default yes (avoid hangs)
+  if ! read -r -p "$prompt [Y/n] " yn </dev/tty; then
+    return 0
+  fi
+  case "${yn:-Y}" in
+    [Yy]*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 usage() {
   cat <<'EOF'
 goswitch - switch Go versions with multiple providers
@@ -58,7 +80,6 @@ _do_from_mod() {
     return 1
   fi
   # Prefer toolchain if present, else 'go' directive
-  # Examples:
   #   toolchain go1.24.6
   #   go 1.23
   local ver_line want
@@ -241,7 +262,7 @@ main() {
       fi
       # Installable via Brew?
       if _gs_brew_series_available "$mm"; then
-        if [ "$auto_yes" -eq 1 ]; then
+        if [ "$auto_yes" -eq 1 ] || _gs_noninteractive; then
           _gs_info "Installing go@${mm} via Homebrew..."
           if brew install "go@${mm}"; then
             _gs_activate_brew_series "$mm" && {
@@ -252,18 +273,13 @@ main() {
           _gs_err "Homebrew install/activation failed — trying asdf."
         else
           _gs_info "Homebrew go@${mm} is not installed."
-          printf "Install go@%s now? [Y/n] " "$mm"
-          read -r ans
-          ans="${ans:-Y}"
-          case "$ans" in
-            [Yy]*)
-              if brew install "go@${mm}" && _gs_activate_brew_series "$mm"; then
-                _gs_info "Using Homebrew go@${mm}: $(_gs_verify)"
-                exit 0
-              fi
-              _gs_err "Homebrew install/activation failed — will try asdf."
-              ;;
-          esac
+          if _gs_confirm "Install go@${mm} now via Homebrew?"; then
+            if brew install "go@${mm}" && _gs_activate_brew_series "$mm"; then
+              _gs_info "Using Homebrew go@${mm}: $(_gs_verify)"
+              exit 0
+            fi
+            _gs_err "Homebrew install/activation failed — will try asdf."
+          fi
         fi
       fi
     fi
@@ -283,14 +299,16 @@ main() {
           exit 0
         }
       fi
-      # Offer install via asdf
-      if [ "$auto_yes" -eq 1 ]; then
-        goswitch_asdf_install "$req" && exit 0 || true
+      if [ "$auto_yes" -eq 1 ] || _gs_noninteractive; then
+        if goswitch_asdf_install "$req"; then
+          exit 0
+        fi
       else
-        printf "asdf golang %s is not installed. Install via asdf now? [Y/n] " "$req"
-        read -r yn
-        yn="${yn:-Y}"
-        case "$yn" in [Yy]*) goswitch_asdf_install "$req" && exit 0 || true ;; esac
+        if _gs_confirm "asdf golang ${req} is not installed. Install via asdf now?"; then
+          if goswitch_asdf_install "$req"; then
+            exit 0
+          fi
+        fi
       fi
     fi
     _gs_err "Could not activate Go ${req}."
@@ -315,14 +333,16 @@ main() {
           exit 0
         }
       fi
-      # Offer install via asdf before trying others
-      if [ "$auto_yes" -eq 1 ]; then
-        goswitch_asdf_install "$req" && exit 0 || true
+      if [ "$auto_yes" -eq 1 ] || _gs_noninteractive; then
+        if goswitch_asdf_install "$req"; then
+          exit 0
+        fi
       else
-        printf "asdf golang %s is not installed. Install via asdf now? [Y/n] " "$req"
-        read -r yn
-        yn="${yn:-Y}"
-        case "$yn" in [Yy]*) goswitch_asdf_install "$req" && exit 0 || true ;; esac
+        if _gs_confirm "asdf golang ${req} is not installed. Install via asdf now?"; then
+          if goswitch_asdf_install "$req"; then
+            exit 0
+          fi
+        fi
       fi
     fi
     if [ "$have_brew" -eq 1 ]; then
@@ -333,7 +353,7 @@ main() {
         fi
       fi
       if _gs_brew_series_available "$mm"; then
-        if [ "$auto_yes" -eq 1 ]; then
+        if [ "$auto_yes" -eq 1 ] || _gs_noninteractive; then
           _gs_info "Installing go@${mm} via Homebrew..."
           if brew install "go@${mm}"; then
             _gs_activate_brew_series "$mm" && {
@@ -344,18 +364,13 @@ main() {
           _gs_err "Homebrew install/activation failed — will try tarball."
         else
           _gs_info "Homebrew go@${mm} is not installed."
-          printf "Install go@%s now via brew? [Y/n] " "$mm"
-          read -r ans
-          ans="${ans:-Y}"
-          case "$ans" in
-            [Yy]*)
-              if brew install "go@${mm}" && _gs_activate_brew_series "$mm"; then
-                _gs_info "Using Homebrew go@${mm}: $(_gs_verify)"
-                exit 0
-              fi
-              _gs_err "Homebrew install/activation failed — will try tarball."
-              ;;
-          esac
+          if _gs_confirm "Install go@${mm} now via Homebrew?"; then
+            if brew install "go@${mm}" && _gs_activate_brew_series "$mm"; then
+              _gs_info "Using Homebrew go@${mm}: $(_gs_verify)"
+              exit 0
+            fi
+            _gs_err "Homebrew install/activation failed — will try tarball."
+          fi
         fi
       fi
     fi
@@ -375,13 +390,12 @@ main() {
       }
     fi
     _gs_info "No tarball install for ${req} found under ~/.local/goversions."
-    printf "Download and install official tarball for %s now? [Y/n] " "$req"
-    read -r yn2
-    yn2="${yn2:-Y}"
-    case "$yn2" in [Yy]*) _gs_tar_install "$req" && _gs_tar_activate "$req" && {
-      _gs_info "Using tarball Go ${req}: $(_gs_verify)"
-      exit 0
-    } ;; esac
+    if [ "$auto_yes" -eq 1 ] || _gs_noninteractive || _gs_confirm "Download and install official tarball for ${req} now?"; then
+      if _gs_tar_install "$req" && _gs_tar_activate "$req"; then
+        _gs_info "Using tarball Go ${req}: $(_gs_verify)"
+        exit 0
+      fi
+    fi
     _gs_err "Could not activate Go ${req} on Linux."
     _gs_info "Tips: goswitch --asdf-install ${req}  |  goswitch --tar-install ${req}"
     exit 1
