@@ -6,11 +6,20 @@ setup() {
 }
 
 @test "--which fails with clear error when no 'go' on PATH" {
-  # Keep coreutils for bats-assert (cat, printf), keep env for shebang.
-  # Do NOT include directories that might contain a real `go`.
-  export PATH="/usr/bin:/bin:$TEST_BIN_DIR"
+  # Hide system go by removing /usr/bin, but provide required tools via TEST_BIN_DIR.
+  export PATH="/bin:$TEST_BIN_DIR"
 
-  run_goswitch --which
+  # Symlink the minimal external utilities goswitch uses from /usr/bin
+  for cmd in dirname uname tr grep sed head sort tail awk cut; do
+    [ -x "/usr/bin/$cmd" ] && ln -sf "/usr/bin/$cmd" "$TEST_BIN_DIR/$cmd"
+  done
+
+  # Sanity check: no go should be resolvable
+  run /usr/bin/env -i PATH="$PATH" bash -c 'command -v go >/dev/null && echo found || echo notfound'
+  assert_output "notfound"
+
+  # Run the script explicitly with bash so we don't rely on /usr/bin/env
+  run bash "$REPO_ROOT/cmd/goswitch" --which
   assert_failure
   assert_output --partial "go not found on PATH."
 }
