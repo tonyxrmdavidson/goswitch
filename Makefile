@@ -15,6 +15,9 @@ SHFMT := shfmt
 SOURCES := cmd/goswitch lib/*.sh
 
 .PHONY: lint lint-fix
+fmt:
+	shfmt -w -i 2 -ci cmd/goswitch lib/*.sh
+
 lint:
 	$(SHELLCHECK) -x -S style $(SOURCES)
 	$(SHFMT) -d -i 2 -ci $(SOURCES)
