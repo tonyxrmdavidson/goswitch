@@ -6,20 +6,32 @@ setup() {
 }
 
 @test "--which fails with clear error when no 'go' on PATH" {
-  # Hide system go by removing /usr/bin, but provide required tools via TEST_BIN_DIR.
-  export PATH="/bin:$TEST_BIN_DIR"
+  # Resolve absolute paths to tools BEFORE constraining PATH (Bash 3.x friendly)
+  LN_BIN="$(command -v ln)"
+  needed_tools=( bash dirname uname tr grep sed head sort tail awk cut cat env printf )
 
-  # Symlink the minimal external utilities goswitch uses from /usr/bin
-  for cmd in dirname uname tr grep sed head sort tail awk cut; do
-    [ -x "/usr/bin/$cmd" ] && ln -sf "/usr/bin/$cmd" "$TEST_BIN_DIR/$cmd"
+  # Collect "cmd|/abs/path" pairs in an indexed array (no associative arrays)
+  SRC_CMDS=()
+  for cmd in "${needed_tools[@]}"; do
+    if src_path="$(command -v "$cmd" 2>/dev/null)"; then
+      SRC_CMDS+=("${cmd}|${src_path}")
+    fi
   done
 
-  # Sanity check: no go should be resolvable
-  run /usr/bin/env -i PATH="$PATH" bash -c 'command -v go >/dev/null && echo found || echo notfound'
-  assert_output "notfound"
+  # Now constrain PATH to ONLY TEST_BIN_DIR so any system 'go' is hidden
+  export PATH="$TEST_BIN_DIR"
+  unset BASH_ENV
+  unset ENV
 
-  # Run the script explicitly with bash so we don't rely on /usr/bin/env
-  run bash "$REPO_ROOT/cmd/goswitch" --which
+  # Symlink required tools into TEST_BIN_DIR using absolute ln path
+  for pair in "${SRC_CMDS[@]}"; do
+    cmd="${pair%%|*}"
+    path="${pair#*|}"
+    "$LN_BIN" -sf "$path" "$TEST_BIN_DIR/$cmd"
+  done
+
+  # Run the CLI with our symlinked bash so PATH stays constrained
+  run "$TEST_BIN_DIR/bash" "$REPO_ROOT/cmd/goswitch" --which
   assert_failure
   assert_output --partial "go not found on PATH."
 }
