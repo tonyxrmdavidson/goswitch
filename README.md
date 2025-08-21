@@ -59,6 +59,12 @@ goswitch --version        # show goswitch version
 
 ## Development
 
+Run the formatter:
+
+```bash
+make fmt
+```
+
 Run the test suite:
 
 ```bash

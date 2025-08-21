@@ -1,7 +1,10 @@
-name: ci
+name: CI
+
 on:
-  push: { branches: [ main ] }
-  pull_request: { branches: [ main ] }
+  push:
+    branches: [ main ]
+  pull_request: {}   # run on all PRs
+  workflow_dispatch: {}
 
 jobs:
   test:
@@ -12,7 +15,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
-      - name: Run bats tests
+          submodules: recursive  # needed for bats-support/assert
+
+      - name: Install tools
         run: |
-          test/vendor/bats/bin/bats -r test
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            brew update
+            brew install shellcheck shfmt
+          else
+            sudo apt-get update
+            sudo apt-get install -y shellcheck shfmt
+          fi
+
+      - name: Lint
+        run: make lint
+
+      - name: Test
+        run: make test
