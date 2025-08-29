@@ -1,148 +1,101 @@
-# shellcheck shell=bash
-# Requires: common.sh
+#!/usr/bin/env bash
+# lib/brew.sh
+# Requires lib/common.sh first.
 
-# Is go@<mm> available & NOT disabled?
+_gs_os() { uname -s | tr '[:upper:]' '[:lower:]'; }
+
 _gs_brew_series_available() {
-  local mm="$1" info
-  info="$(brew info "go@${mm}" 2>&1)" || return 1
-  echo "$info" | grep -qi 'disabled because' && return 1
-  return 0
+  local mm="$1"
+  brew info --json=v2 "go@${mm}" >/dev/null 2>&1
 }
 
-# List installed series (adds unversioned 'go' series)
 _gs_brew_installed_series() {
-  local out full cur_mm
-  out="$(brew list --versions 2>/dev/null | awk '/^go@[0-9]+\.[0-9]+/ {sub(/^go@/,"",$1); print $1}' | sort -V)"
-  [ -n "$out" ] && echo "$out"
-  if brew list --versions go >/dev/null 2>&1; then
-    full="$(brew list --versions go 2>/dev/null | awk '{print $2}' | tail -n1)"
-    cur_mm="$(echo "$full" | awk -F. '{print $1"."$2}')"
-    if ! echo "$out" | grep -qx "$cur_mm"; then echo "$cur_mm"; fi
-  fi
+  brew list --versions go go@1.20 go@1.21 go@1.22 go@1.23 go@1.24 2>/dev/null \
+    | awk '{print $1,$2}' \
+    | awk '
+        $1 ~ /^go@/ { sub(/^go@/, "", $1); print $1; next }
+        $1 == "go" { split($2,a,"."); print a[1]"."a[2] }
+      ' | sort -Vu
 }
 
-# All available series (strict) + current unversioned 'go' series
-_gs_brew_all_series() {
-  local series cur_mm
-  series="$(brew search go@ 2>/dev/null | grep -E '^go@[0-9]+\.[0-9]+$' | sed -E 's/^go@//' | sort -V)"
-  [ -n "$series" ] && echo "$series"
-  cur_mm="$(_gs_brew_current_series 2>/dev/null)"
-  if [ -n "$cur_mm" ] && ! echo "$series" | grep -qx "$cur_mm"; then echo "$cur_mm"; fi
-}
-
-# Not installed series
-_gs_brew_not_installed_series() {
-  local all installed s mm
-  all="$(_gs_brew_all_series)"
-  installed="$(_gs_brew_installed_series)"
-  s="|$(echo "$installed" | tr ' \n' '||')"
-  echo "$all" | while IFS= read -r mm; do
-    [ -n "$mm" ] || continue
-    case "$s" in *"|$mm|"*) ;; *) echo "$mm" ;; esac
-  done
-}
-
-# Activate series (supports go@<mm> and unversioned 'go' when it matches)
+# IMPORTANT: verify using explicit path, not `command -v go` (which may be an asdf shim).
 _gs_activate_brew_series() {
-  local mm="$1" prefix bin cur_mm
-  if brew --prefix "go@${mm}" >/dev/null 2>&1; then
-    prefix="$(brew --prefix "go@${mm}")" || return 1
-  else
-    cur_mm="$(_gs_brew_current_series 2>/dev/null)" || return 1
-    if [ "$cur_mm" = "$mm" ] && brew --prefix go >/dev/null 2>&1; then
-      prefix="$(brew --prefix go)" || return 1
-    else
-      return 1
-    fi
-  fi
-  bin="${prefix}/bin"
-  [ -x "${bin}/go" ] || return 1
-  export PATH="${bin}:${PATH}"
-  hash -r 2>/dev/null || true
-  return 0
-}
+  local mm="$1"
+  local brew_prefix="/opt/homebrew"  # Apple Silicon default; Linuxbrew will differ
 
-# Interactive installer
-goswitch_brew_install() {
-  if ! _gs_has brew; then
-    _gs_err "Homebrew not found."
+  # Allow brew to tell us its prefix (portable)
+  if command -v brew >/dev/null 2>&1; then
+    brew_prefix="$(brew --prefix)"
+  fi
+
+  # Ensure requested series is installed (or the generic go)
+  if ! brew list --versions "go@${mm}" >/dev/null 2>&1 && ! brew list --versions go >/dev/null 2>&1; then
+    _gs_err "Homebrew go@${mm} is not installed."
     return 1
   fi
-  local not_installed_list line
-  not_installed_list="$(_gs_brew_not_installed_series)"
-  if [ -z "$not_installed_list" ]; then
-    _gs_info "All discovered Homebrew go@ series are already installed."
+
+  # Unlink all known kegs quietly
+  brew unlink go go@1.20 go@1.21 go@1.22 go@1.23 go@1.24 >/dev/null 2>&1 || true
+
+  # Link requested series
+  if ! brew link --overwrite --force "go@${mm}" >/dev/null 2>&1; then
+    # Try generic go as fallback (e.g., when mm corresponds to the unversioned formula)
+    brew link --overwrite --force go >/dev/null 2>&1 || true
+  fi
+
+  # Clear shell cache (for *this* process)
+  hash -r
+
+  # Verify by inspecting the fixed symlink path, not PATH
+  local link_path="${brew_prefix}/bin/go"
+  local target
+  target="$(readlink "$link_path" 2>/dev/null || true)"
+
+  # Preferred success: the symlink points at Cellar/go@<mm>/.../bin/go
+  if echo "$target" | grep -q "Cellar/go@${mm}/"; then
     return 0
   fi
 
-  local -a arr
-  arr=()
-  while IFS= read -r line; do [ -n "$line" ] && arr=("${arr[@]}" "$line"); done <<EOF
-$not_installed_list
-EOF
+  # Fallback: even if the symlink is generic, confirm the version matches mm
+  if "$link_path" version 2>/dev/null | grep -q "go${mm}\."; then
+    return 0
+  fi
 
-  _gs_info "Homebrew Go series NOT installed:"
-  local i
-  for i in "${!arr[@]}"; do printf "  [%d] go@%s\n" "$((i + 1))" "${arr[$i]}"; done
+  _gs_err "Homebrew activation didn’t result in go@${mm} at ${link_path}."
+  return 1
+}
 
-  local choice
-  while :; do
-    read -r -p "Select a number to install (or 'q' to cancel): " choice
-    case "$choice" in
-      [Qq])
-        _gs_info "Cancelled."
-        return 1
-        ;;
-      '' | *[!0-9]*)
-        _gs_err "Invalid selection."
-        continue
-        ;;
-      *)
-        if [ "$choice" -ge 1 ] && [ "$choice" -le "${#arr[@]}" ]; then
-          break
-        else
-          _gs_err "Invalid selection."
-        fi
-        ;;
+goswitch_brew_switch() {
+  local req="$1" mm
+  mm="$(_gs_mm "$req")"
+  if brew list --versions "go@${mm}" >/dev/null 2>&1 || brew list --versions go >/dev/null 2>&1; then
+    _gs_activate_brew_series "$mm"
+  else
+    return 1
+  fi
+}
 
-    esac
-  done
-
-  local mm="${arr[$((choice - 1))]}"
-  read -r -p "Install Homebrew go@${mm}? [Y/n] " ans
-  ans="${ans:-Y}"
-  case "$ans" in
-    [Yy]*)
-      if _gs_brew_series_available "$mm"; then
-        _gs_info "Installing go@${mm} via Homebrew..."
-        brew install "go@${mm}" || {
-          _gs_err "Homebrew install failed."
-          return 1
-        }
-      else
-        local cur_mm
-        cur_mm="$(_gs_brew_current_series 2>/dev/null)"
-
-        if [ "$cur_mm" = "$mm" ]; then
-          _gs_info "Installing current 'go' ($cur_mm) via Homebrew..."
-          brew install go || {
-            _gs_err "Homebrew install failed."
-            return 1
-          }
-        else
-          _gs_err "Homebrew go@${mm} unavailable/disabled, and 'go' is $cur_mm."
-          return 1
-        fi
-      fi
-      _gs_activate_brew_series "$mm" || {
-        _gs_err "Installed but could not activate go@${mm}."
-        return 1
-      }
-      _gs_info "Activated Homebrew go@${mm}: $(go version)"
-      ;;
-    *)
-      _gs_info "Cancelled."
+goswitch_brew_install() {
+  local req="${1:-}"
+  local mm
+  if [ -n "$req" ]; then
+    mm="$(_gs_mm "$req")"
+    if ! _gs_brew_series_available "$mm"; then
+      _gs_err "Homebrew has no formula for go@${mm} on this system."
       return 1
-      ;;
-  esac
+    fi
+    brew install "go@${mm}" || return 1
+    _gs_activate_brew_series "$mm"
+    return $?
+  fi
+  local installed
+  installed="$(_gs_brew_installed_series | tr '\n' ' ')"
+  echo "Homebrew installed series:"
+  if [ -n "$installed" ]; then
+    echo "$installed" | tr ' ' '\n'
+  else
+    echo "(none)"
+  fi
+  echo
+  echo "Tip: run 'goswitch 1.xx' to switch directly once installed."
 }

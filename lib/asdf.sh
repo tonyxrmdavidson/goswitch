@@ -1,101 +1,115 @@
-# shellcheck shell=bash
-# Requires: common.sh
+#!/usr/bin/env bash
+# lib/asdf.sh
+# Requires lib/common.sh first.
 
-# Ensure asdf + golang plugin exist (add plugin if missing)
-_gs_asdf_ensure() {
-  if ! _gs_has asdf; then
-    _gs_err "asdf is not installed (https://asdf-vm.com)."
-    return 1
-  fi
-  if ! asdf plugin list 2>/dev/null | grep -qx "golang"; then
-    _gs_info "Adding asdf golang plugin..."
-    # Prefer community plugin
-    asdf plugin add golang https://github.com/asdf-community/asdf-golang.git || return 1
-  fi
-  return 0
+# ---------- asdf CLI compatibility ----------
+
+_gs_asdf_has_set() {
+  asdf help 2>&1 | grep -qE '\basdf set\b'
 }
 
-# Clean asdf 'golang' list output (remove leading '*' and spaces)
-_gs_asdf_list_versions_clean() {
-  asdf list golang 2>/dev/null | sed 's/^[[:space:]]*\*//; s/^[[:space:]]*//'
+_gs_asdf_ensure_plugin() {
+  asdf plugin list 2>/dev/null | grep -qx 'golang' || asdf plugin add golang >/dev/null 2>&1 || true
 }
 
-# List all available remote golang versions (from plugin)
-_gs_asdf_list_all_remote() {
-  asdf list all golang 2>/dev/null
-}
-
-# Find latest patch in a series (e.g., "1.21" -> "1.21.13") from remote index
-_gs_asdf_latest_patch_for_series() {
-  local mm="$1"
-  _gs_asdf_list_all_remote | grep -E "^${mm}(\.|$)" | sort -V | tail -n1
-}
-
-# Install a specific version via asdf (assumes plugin exists)
-_gs_asdf_install_version() {
+_gs_asdf_set_home_version() {
   local ver="$1"
-  _gs_info "Installing golang ${ver} via asdf..."
-  asdf install golang "${ver}" || return 1
-  # refresh shims; harmless even if not using shims
-  asdf reshim golang || true
-  return 0
+  _gs_asdf_ensure_plugin
+  if _gs_asdf_has_set; then
+    asdf set --home golang "$ver" >/dev/null 2>&1
+  else
+    asdf global golang "$ver" >/dev/null 2>&1
+  fi
+  asdf reshim golang >/dev/null 2>&1 || true
 }
 
-# Activate an asdf golang version (handles both bin layouts)
+_gs_asdf_set_local_version() {
+  local ver="$1"
+  _gs_asdf_ensure_plugin
+  if _gs_asdf_has_set; then
+    asdf set golang "$ver" >/dev/null 2>&1
+  else
+    asdf local golang "$ver" >/dev/null 2>&1
+  fi
+  asdf reshim golang >/dev/null 2>&1 || true
+}
+
+_gs_asdf_set_system_home() {
+  _gs_asdf_set_home_version "system"
+}
+
+# ---------- query utilities ----------
+
+_gs_asdf_list_versions_clean() {
+  _gs_asdf_ensure_plugin
+  asdf list golang 2>/dev/null \
+    | sed -e 's/^[[:space:]]*//' -e 's/*[[:space:]]*//' \
+    | grep -E '^[0-9]+(\.[0-9]+){1,2}$' || true
+}
+
+_gs_asdf_latest_in_series() {
+  local mm="$1"
+  _gs_asdf_ensure_plugin
+  asdf list all golang "$mm" 2>/dev/null \
+    | grep -E "^${mm}\.[0-9]+$" \
+    | sort -V | tail -n1
+}
+
+_gs_asdf_where() {
+  local ver="$1"
+  asdf where golang "$ver" 2>/dev/null || true
+}
+
+# ---------- activation & install ----------
+
+# Find an executable go binary inside an asdf install dir.
+# Tries both "<dir>/bin/go" and "<dir>/go/bin/go".
+_gs_asdf_bin_for_dir() {
+  local dir="$1"
+  if [ -x "${dir}/bin/go" ]; then
+    echo "${dir}/bin/go"
+  elif [ -x "${dir}/go/bin/go" ]; then
+    echo "${dir}/go/bin/go"
+  else
+    echo ""
+  fi
+}
+
 _gs_activate_asdf_version() {
-  local ver="$1" dir bin1 bin2 usebin
-  dir="$(asdf where golang "$ver")" || return 1
-  bin1="${dir}/bin/go"    # some setups
-  bin2="${dir}/go/bin/go" # common layout for asdf-golang
-  if [ -x "$bin1" ]; then
-    usebin="$(dirname "$bin1")"
-  elif [ -x "$bin2" ]; then
-    usebin="$(dirname "$bin2")"
-  elif [ -x "$HOME/.asdf/shims/go" ]; then
-    usebin="$HOME/.asdf/shims"
-  else
-    _gs_err "Could not find go binary under ${dir}/bin or ${dir}/go/bin."
-    return 1
-  fi
-  export PATH="${usebin}:${PATH}"
-  hash -r 2>/dev/null || true
+  local ver="$1"
+  local dir bin
+  dir="$(_gs_asdf_where "$ver")"
+  [ -n "$dir" ] || { _gs_err "asdf golang ${ver} is not installed."; return 1; }
+  bin="$(_gs_asdf_bin_for_dir "$dir")"
+  [ -n "$bin" ] || { _gs_err "asdf golang ${ver} has no go binary under ${dir} (looked for bin/go and go/bin/go)."; return 1; }
+  "$bin" version >/dev/null 2>&1 || { _gs_err "Installed asdf golang ${ver} failed to execute."; return 1; }
   return 0
 }
 
-# Public: interactive/non-interactive asdf installer
-# Usage:
-#   goswitch --asdf-install 1.21.13
-#   goswitch --asdf-install 1.21     # installs latest patch
 goswitch_asdf_install() {
-  local req="$1" ver=""
-  _gs_asdf_ensure || return 1
+  local req="$1" exact="" mm dir bin
+  _gs_asdf_ensure_plugin
 
-  # If 'req' is a series (x.y), find latest patch; else use as-is
-  if echo "$req" | grep -Eq '^[0-9]+\.[0-9]+$'; then
-    ver="$(_gs_asdf_latest_patch_for_series "$req")"
-    if [ -z "$ver" ]; then
-      _gs_err "Could not find a remote version for series ${req} via asdf."
-      return 1
-    fi
+  case "$req" in
+    *.*.*) exact="$req" ;;
+    *)     mm="$(_gs_mm "$req")"; exact="$(_gs_asdf_latest_in_series "$mm")" ;;
+  esac
+  [ -n "$exact" ] || { _gs_err "Could not resolve a version for ${req}."; return 1; }
+
+  if [ -z "$(_gs_asdf_where "$exact")" ]; then
+    _gs_info "Installing golang ${exact} via asdf..."
+    asdf install golang "$exact" || { _gs_err "asdf install failed for ${exact}."; return 1; }
+  fi
+
+  # Persist selection (local if in a repo, else home)
+  if [ -f ".tool-versions" ] || git rev-parse --show-toplevel >/dev/null 2>&1; then
+    _gs_asdf_set_local_version "$exact"
   else
-    ver="$req"
+    _gs_asdf_set_home_version "$exact"
   fi
 
-  # Skip install if already present
-  if _gs_asdf_list_versions_clean | grep -qx "$ver"; then
-    _gs_info "asdf golang $ver is already installed."
-  else
-    _gs_asdf_install_version "$ver" || {
-      _gs_err "asdf install failed for ${ver}."
-      return 1
-    }
-  fi
-
-  # Activate immediately
-  if _gs_activate_asdf_version "$ver"; then
-    _gs_info "Using asdf golang ${ver}: $(go version)"
-    return 0
-  fi
-  _gs_err "Installed but could not activate asdf golang ${ver}."
-  return 1
+  dir="$(_gs_asdf_where "$exact")"
+  bin="$(_gs_asdf_bin_for_dir "$dir")"
+  _gs_info "Using asdf golang ${exact}: $("$bin" version 2>/dev/null)"
+  return 0
 }
